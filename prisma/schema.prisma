@@ -1,0 +1,27 @@
+// Define the database
+datasource db {
+provider = "sqlite"
+url = "file:./dev.db"
+}
+
+// Define the Prisma Client generator
+generator client {
+provider = "prisma-client-js"
+output = "../app/generated/prisma"
+}
+
+// Define your models
+model User {
+id String @id @default(cuid())
+email String @unique
+uploads Upload[]
+}
+
+model Upload {
+id Int @id @default(autoincrement())
+filename String
+content String
+createdAt DateTime @default(now())
+user User @relation(fields: [userId], references: [id])
+userId String
+}
