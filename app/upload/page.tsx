@@ -1,92 +1,108 @@
 'use client';
 
-import { useSession } from 'next-auth/react';
+import { useSession, signIn } from 'next-auth/react';
 import { useState } from 'react';
 
 export default function UploadPage() {
-const { data: session, status } = useSession();
-const [file, setFile] = useState<File | null>(null);
-const [response, setResponse] = useState('');
-const [summary, setSummary] = useState('');
+  const { data: session, status } = useSession();
+  const [file, setFile] = useState<File | null>(null);
+  const [response, setResponse] = useState('');
+  const [summary, setSummary] = useState('');
+  const [loading, setLoading] = useState(false);
 
-if (status === 'loading') {
-return <p>Loading...</p>;
-}
+  if (status === 'loading') {
+    return <p>Loading session...</p>;
+  }
 
-if (!session) {
-return <p>You must be signed in to upload files.</p>;
-}
+  if (!session) {
+    return (
+      <div style={{ padding: '2rem' }}>
+        <h2>You must be signed in to upload files.</h2>
+        <button onClick={() => signIn('github')}>Sign in with GitHub</button>
+      </div>
+    );
+  }
 
-const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-e.preventDefault();
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
 
-if (!file) {
-alert('Please select a file.');
-return;
-}
+    if (!file) {
+      alert('Please select a file.');
+      return;
+    }
 
-const formData = new FormData();
-formData.append('file', file);
+    const formData = new FormData();
+    formData.append('file', file);
 
-try {
-const res = await fetch('/api/upload', {
-method: 'POST',
-body: formData,
-});
+    setLoading(true);
+    setResponse('');
+    setSummary('');
 
-const data = await res.json();
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
 
-if (data.error) {
-setResponse('Upload failed: ' + data.error);
-return;
-}
+      const data = await res.json();
 
-setResponse(`Uploaded: ${data.filename}\nPreview:\n${data.contentPreview}`);
+      if (data.error) {
+        setResponse('Upload failed: ' + data.error);
+        setLoading(false);
+        return;
+      }
 
-// Get AI summary
-const summaryRes = await fetch('/api/analyze', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
-body: JSON.stringify({ text: data.contentPreview }),
-});
+      setResponse(`✅ Uploaded: ${data.filename}\n\n📄 Preview:\n${data.contentPreview}`);
 
-const summaryData = await summaryRes.json();
+      // Request AI summary
+      const summaryRes = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: data.contentPreview }),
+      });
 
-if (summaryData.error) {
-setSummary('AI analysis failed: ' + summaryData.error);
-} else {
-setSummary(summaryData.summary);
-}
-} catch (err) {
-console.error(err);
-setResponse('Upload failed.');
-}
-};
+      const summaryData = await summaryRes.json();
 
-return (
-<div style={{ padding: '2rem' }}>
-<h1>PermitPilot File Upload</h1>
-<form onSubmit={handleSubmit}>
-<input
-type="file"
-accept=".txt"
-onChange={(e) => setFile(e.target.files?.[0] || null)}
-/>
-<button type="submit">Upload</button>
-</form>
+      if (summaryData.error) {
+        setSummary('AI analysis failed: ' + summaryData.error);
+      } else {
+        setSummary(summaryData.summary);
+      }
+    } catch (err) {
+      console.error(err);
+      setResponse('❌ Upload failed due to network error.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-{response && (
-<div style={{ marginTop: '1rem' }}>
-<pre>{response}</pre>
-</div>
-)}
+  return (
+    <div style={{ padding: '2rem' }}>
+      <h1>PermitPilot File Upload</h1>
 
-{summary && (
-<div style={{ marginTop: '1rem' }}>
-<h2>AI Summary</h2>
-<p>{summary}</p>
-</div>
-)}
-</div>
-);
+      <form onSubmit={handleSubmit} style={{ marginBottom: '1rem' }}>
+        <input
+          type="file"
+          accept=".txt"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+        />
+        <button type="submit" disabled={loading}>
+          {loading ? 'Uploading...' : 'Upload'}
+        </button>
+      </form>
+
+      {response && (
+        <div style={{ whiteSpace: 'pre-wrap', marginBottom: '1rem' }}>
+          {response}
+        </div>
+      )}
+
+      {summary && (
+        <div>
+          <h2>🧠 AI Summary</h2>
+          <p>{summary}</p>
+        </div>
+      )}
+    </div>
+  );
 }
