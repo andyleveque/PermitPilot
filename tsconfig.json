@@ -1,8 +1,9 @@
+// tsconfig.json
 {
   "compilerOptions": {
-    "baseUrl": ".",                       // ✅ Add this
+    "baseUrl": ".",                     // ✅ enables path aliases
     "paths": {
-      "@/*": ["./*"]                      // ✅ Keep this
+      "@/*": ["./*"]                    // ✅ map @ to project root
     },
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
@@ -17,11 +18,7 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ]
+    "plugins": [{ "name": "next" }]
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]
