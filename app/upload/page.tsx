@@ -1,42 +1,65 @@
 'use client';
 
-import { useSession, signIn } from 'next-auth/react';
-import { useState } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { useSession, signOut } from 'next-auth/react';
 
 export default function UploadPage() {
-  const { data: session, status } = useSession();
+  const { data: session } = useSession();
   const [file, setFile] = useState<File | null>(null);
-  const [response, setResponse] = useState('');
-  const [summary, setSummary] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [summary, setSummary] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
-  if (status === 'loading') {
-    return <p>Loading session...</p>;
-  }
+  // Prevent browser default drag behavior
+  useEffect(() => {
+    const preventDefaults = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
 
-  if (!session) {
-    return (
-      <div style={{ padding: '2rem' }}>
-        <h2>You must be signed in to upload files.</h2>
-        <button onClick={() => signIn('github')}>Sign in with GitHub</button>
-      </div>
-    );
-  }
+    window.addEventListener('dragover', preventDefaults);
+    window.addEventListener('drop', preventDefaults);
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    return () => {
+      window.removeEventListener('dragover', preventDefaults);
+      window.removeEventListener('drop', preventDefaults);
+    };
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
 
-    if (!file) {
-      alert('Please select a file.');
-      return;
+    const droppedFile = e.dataTransfer.files?.[0];
+    if (droppedFile) {
+      setFile(droppedFile);
+      setPreview(null);
+      setSummary(null);
+      setMessage(null);
     }
+  }, []);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (selected) {
+      setFile(selected);
+      setPreview(null);
+      setSummary(null);
+      setMessage(null);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!file) return;
+
+    setUploading(true);
+    setMessage(null);
 
     const formData = new FormData();
     formData.append('file', file);
-
-    setLoading(true);
-    setResponse('');
-    setSummary('');
 
     try {
       const res = await fetch('/api/upload', {
@@ -44,63 +67,77 @@ export default function UploadPage() {
         body: formData,
       });
 
-      const data = await res.json();
+      const result = await res.json();
 
-      if (data.error) {
-        setResponse('Upload failed: ' + data.error);
-        setLoading(false);
-        return;
-      }
+      if (!res.ok) throw new Error(result.error || 'Upload failed');
 
-      setResponse(`✅ Uploaded: ${data.filename}\n\n📄 Preview:\n${data.contentPreview}`);
-
-      // Request AI summary
-      const summaryRes = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: data.contentPreview }),
-      });
-
-      const summaryData = await summaryRes.json();
-
-      if (summaryData.error) {
-        setSummary('AI analysis failed: ' + summaryData.error);
-      } else {
-        setSummary(summaryData.summary);
-      }
-    } catch (err) {
-      console.error(err);
-      setResponse('❌ Upload failed due to network error.');
+      setMessage(`✅ Uploaded: ${result.upload.filename}`);
+      setPreview(result.upload.content);
+      setSummary(result.upload.summary || 'AI analysis failed or not available');
+    } catch (err: any) {
+      setMessage(`❌ Upload failed: ${err.message}`);
     } finally {
-      setLoading(false);
+      setUploading(false);
     }
   };
 
+  if (!session) return <p>Please sign in</p>;
+
   return (
-    <div style={{ padding: '2rem' }}>
-      <h1>PermitPilot File Upload</h1>
-
-      <form onSubmit={handleSubmit} style={{ marginBottom: '1rem' }}>
-        <input
-          type="file"
-          accept=".txt"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
-        />
-        <button type="submit" disabled={loading}>
-          {loading ? 'Uploading...' : 'Upload'}
+    <div className="max-w-2xl mx-auto p-6">
+      <div className="flex justify-between items-center mb-4">
+        <span>Signed in as {session.user?.email}</span>
+        <button
+          onClick={() => signOut()}
+          className="text-sm text-blue-600 hover:underline"
+        >
+          Sign out
         </button>
-      </form>
+      </div>
 
-      {response && (
-        <div style={{ whiteSpace: 'pre-wrap', marginBottom: '1rem' }}>
-          {response}
+      <h1 className="text-xl font-bold mb-4">PermitPilot File Upload</h1>
+
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragOver(true);
+        }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={handleDrop}
+        className={`border-2 border-dashed p-6 mb-4 text-center transition rounded-lg ${
+          isDragOver ? 'border-blue-500 bg-blue-50' : 'border-gray-300'
+        }`}
+      >
+        {file ? (
+          <p>{file.name}</p>
+        ) : (
+          <p>Drag and drop a file here, or choose one below</p>
+        )}
+      </div>
+
+      <input type="file" onChange={handleFileChange} className="mb-4" />
+
+      <button
+        onClick={handleSubmit}
+        disabled={!file || uploading}
+        className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+      >
+        {uploading ? 'Uploading...' : 'Upload'}
+      </button>
+
+      {message && <p className="mt-4">{message}</p>}
+
+      {preview && (
+        <div className="mt-6">
+          <h2 className="font-semibold">📄 Preview:</h2>
+          <pre className="bg-gray-100 p-3 rounded whitespace-pre-wrap">{preview}</pre>
         </div>
       )}
 
       {summary && (
-        <div>
-          <h2>🧠 AI Summary</h2>
-          <p>{summary}</p>
+        <div className="mt-6">
+          <h2 className="font-semibold">🧠 AI Summary</h2>
+          <p className="bg-yellow-50 p-3 rounded">{summary}</p>
         </div>
       )}
     </div>

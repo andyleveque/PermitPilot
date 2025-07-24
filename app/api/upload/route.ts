@@ -1,62 +1,74 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma'; // Adjust path if needed
+import { getServerSession } from 'next-auth';
+import { authOptions } from '../auth/[...nextauth]/route';
+import prisma from '@/lib/prisma';
 import OpenAI from 'openai';
 
-// Initialize OpenAI client
-const openai = new OpenAI({
-apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI();
 
-export async function POST(request: NextRequest) {
-try {
-// Parse incoming form data
-const formData = await request.formData();
-const file = formData.get('file') as File;
+export async function POST(req: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
 
-if (!file) {
-return NextResponse.json({ error: 'No file uploaded' }, { status: 400 });
-}
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-// Read file content as text
-const text = await file.text();
+    const email = session.user.email;
 
-// Get the user's session (optional: if you're associating uploads with users)
-// const session = await getServerSession(authOptions);
-// const userEmail = session?.user?.email;
+    // Ensure the user exists or create them
+    const user = await prisma.user.upsert({
+      where: { email },
+      update: {},
+      create: { email },
+    });
 
-// Save to database (optional: associate with user)
-const saved = await prisma.upload.create({
-data: {
-filename: file.name,
-content: text,
-// user: { connect: { email: userEmail } } // if users are linked
-},
-});
+    const formData = await req.formData();
+    const file = formData.get('file');
 
-// Send text to OpenAI for summarization
-const analysisRes = await openai.chat.completions.create({
-model: 'gpt-4o',
-messages: [
-{
-role: 'system',
-content:
-'You are an expert permit assistant. Summarize key construction permit requirements clearly.',
-},
-{
-role: 'user',
-content: `Analyze this permit text:\n\n${text}`,
-},
-],
-});
+    if (!(file instanceof Blob)) {
+      return NextResponse.json({ error: 'Invalid file uploaded' }, { status: 400 });
+    }
 
-const summary = analysisRes.choices[0].message?.content || 'No summary returned';
+    const content = await file.text();
+    const filename = (file as File).name ?? 'unknown.txt';
 
-return NextResponse.json({
-filename: file.name,
-contentPreview: summary,
-});
-} catch (error) {
-console.error('Upload error:', error);
-return NextResponse.json({ error: 'Upload or analysis failed' }, { status: 500 });
-}
+    // Attempt AI summary (optional)
+    let summary = '';
+    try {
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'Summarize the key information in a construction permit document.',
+          },
+          {
+            role: 'user',
+            content,
+          },
+        ],
+      });
+
+      summary = completion.choices[0]?.message?.content ?? '';
+    } catch (error) {
+      console.warn('⚠️ AI summary failed:', error);
+    }
+
+    const upload = await prisma.upload.create({
+      data: {
+        filename,
+        content,
+        summary,
+        user: {
+          connect: { email },
+        },
+      },
+    });
+
+    return NextResponse.json({ upload });
+  } catch (error) {
+    console.error('❌ Upload error:', error);
+    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+  }
 }
