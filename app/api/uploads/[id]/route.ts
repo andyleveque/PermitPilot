@@ -1,10 +1,10 @@
-import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/api/auth/[...nextauth]/route';
 import prisma from '@/lib/prisma';
+import { NextResponse } from 'next/server';
 
-export async function DELETE(
-  req: NextRequest,
+export async function PATCH(
+  req: Request,
   { params }: { params: { id: string } }
 ) {
   const session = await getServerSession(authOptions);
@@ -13,20 +13,52 @@ export async function DELETE(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const uploadId = Number(params.id);
+  const id = parseInt(params.id);
+  const body = await req.json();
+  const { summary, name } = body;
 
-  const upload = await prisma.upload.findUnique({
-    where: { id: uploadId },
-    include: { user: true },
-  });
+  try {
+    const upload = await prisma.upload.update({
+      where: {
+        id,
+        user: { email: session.user.email },
+      },
+      data: {
+        ...(summary !== undefined && { summary }),
+        ...(name !== undefined && { name }),
+      },
+    });
 
-  if (!upload || upload.user.email !== session.user.email) {
-    return NextResponse.json({ error: 'Not found or unauthorized' }, { status: 404 });
+    return NextResponse.json(upload);
+  } catch (error) {
+    console.error('Error updating upload:', error);
+    return NextResponse.json({ error: 'Failed to update upload' }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  const session = await getServerSession(authOptions);
+
+  if (!session?.user?.email) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  await prisma.upload.delete({
-    where: { id: uploadId },
-  });
+  const id = parseInt(params.id);
 
-  return NextResponse.json({ message: 'Upload deleted' });
+  try {
+    await prisma.upload.delete({
+      where: {
+        id,
+        user: { email: session.user.email },
+      },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting upload:', error);
+    return NextResponse.json({ error: 'Failed to delete upload' }, { status: 500 });
+  }
 }

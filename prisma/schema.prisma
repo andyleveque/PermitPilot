@@ -9,7 +9,7 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Define your models
+// Models
 model User {
   id      String   @id @default(cuid())
   email   String   @unique
@@ -17,11 +17,14 @@ model User {
 }
 
 model Upload {
-  id        Int      @id @default(autoincrement())
-  filename  String
-  content   String
-  summary   String?  // 👈 Optional field added for AI summary
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
+  id         Int      @id @default(autoincrement())
+  name       String   @map("filename") // 👈 maps to existing "filename" column
+  url        String?
+  content    String
+  summary    String?
+  tags       String   @default("")     // Stored as a comma-separated string
+  createdAt  DateTime @default(now())
+  replacedAt DateTime?
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
 }
