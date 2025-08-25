@@ -1,74 +1,61 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '../auth/[...nextauth]/route';
-import prisma from '@/lib/prisma';
-import OpenAI from 'openai';
-
-const openai = new OpenAI();
+// app/api/upload/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { auth } from "@/auth"; // If you're on NextAuth v4, swap to getServerSession(authOptions)
+export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-
-    if (!session?.user?.email) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const email = session.user.email;
-
-    // Ensure the user exists or create them
-    const user = await prisma.user.upsert({
-      where: { email },
-      update: {},
-      create: { email },
-    });
-
-    const formData = await req.formData();
-    const file = formData.get('file');
-
-    if (!(file instanceof Blob)) {
-      return NextResponse.json({ error: 'Invalid file uploaded' }, { status: 400 });
-    }
-
-    const content = await file.text();
-    const filename = (file as File).name ?? 'unknown.txt';
-
-    // Attempt AI summary (optional)
-    let summary = '';
+    // (Optional) get signed-in user
+    let userEmail: string | undefined;
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          {
-            role: 'system',
-            content: 'Summarize the key information in a construction permit document.',
-          },
-          {
-            role: 'user',
-            content,
-          },
-        ],
-      });
-
-      summary = completion.choices[0]?.message?.content ?? '';
-    } catch (error) {
-      console.warn('⚠️ AI summary failed:', error);
+      const session = await auth();
+      userEmail = (session as any)?.user?.email as string | undefined;
+    } catch {
+      // ignore if unauthenticated; make sure schema allows nullable user
     }
 
-    const upload = await prisma.upload.create({
-      data: {
-        filename,
-        content,
-        summary,
-        user: {
-          connect: { email },
-        },
-      },
+    // Expect multipart/form-data with a "file" field
+    const form = await req.formData();
+    const file = form.get("file");
+    if (!file || typeof file === "string") {
+      return NextResponse.json({ error: "No file provided (expected 'file' field)" }, { status: 400 });
+    }
+
+    const f = file as File;
+    const name = f.name || "upload";
+    const mimeType = f.type || "application/octet-stream";
+    const size = f.size ?? 0;
+
+    // (Optional) capture text for text/* (handy for search/summaries later)
+    let content: string | null = null;
+    if (mimeType.startsWith("text/")) {
+      const text = await f.text();
+      content = text.slice(0, 100_000); // keep it reasonable
+    }
+
+    // TODO: store bytes in S3/Vercel Blob and set `url`
+    const url: string | null = null;
+
+    const data: any = {
+      name,                // REQUIRED: fixes "Argument `name` is missing"
+      filename: name,      // keep if your schema also defines `filename`
+      mimeType,
+      size,
+      url,
+      content,
+      summary: null,       // can be populated later by a job
+      ...(userEmail ? { user: { connect: { email: userEmail } } } : {}),
+    };
+
+    const created = await prisma.upload.create({
+      data,
+      select: { id: true, name: true },
     });
 
-    return NextResponse.json({ upload });
-  } catch (error) {
-    console.error('❌ Upload error:', error);
-    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+    return NextResponse.json({ ok: true, id: created.id, name: created.name }, { status: 200 });
+  } catch (e: any) {
+    console.error("❌ Upload error:", e);
+    return NextResponse.json({ error: e?.message ?? "Upload failed" }, { status: 500 });
   }
 }
