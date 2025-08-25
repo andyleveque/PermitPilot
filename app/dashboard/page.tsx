@@ -1,332 +1,208 @@
-'use client';
+// app/dashboard/page.tsx
+import React from "react";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { auth } from "@/auth"; // NextAuth v5; for v4 use getServerSession(authOptions)
+import { getUploadsForUser, getUploadFacetsForUser, type UploadListOpts } from "@/lib/data/uploads";
 
-import { useEffect, useMemo, useState } from 'react';
-import { useSession } from 'next-auth/react';
-import toast from 'react-hot-toast';
-import { getFileTypeIcon } from '../../utils/fileType';
+function isChecked(value: string, selected: string[] | undefined) {
+  return !!selected?.includes(value);
+}
+function parseArrayParam(p: string | string[] | undefined): string[] | undefined {
+  if (!p) return undefined;
+  if (Array.isArray(p)) return p;
+  return p.split(",").map((s) => s.trim()).filter(Boolean);
+}
 
-type Upload = {
-  id: number;
-  name: string;
-  url: string;
-  summary?: string | null;
-  createdAt: string;
-  replacedAt?: string | null;
-  tags?: string[];
-};
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: { [key: string]: string | string[] | undefined };
+}) {
+  const session = await auth();
+  // const session = await getServerSession(authOptions); // if on NextAuth v4
+  const userId = (session as any)?.user?.id as string | undefined;
+  if (!userId) redirect("/api/auth/signin?callbackUrl=/dashboard");
 
-export default function DashboardPage() {
-  const { data: session } = useSession();
-  const [uploads, setUploads] = useState<Upload[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editedSummary, setEditedSummary] = useState('');
-  const [fileTypeFilter, setFileTypeFilter] = useState('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const pageSize = 5;
+  const qp_search = typeof searchParams.search === "string" ? searchParams.search : undefined;
+  const qp_sort = typeof searchParams.sort === "string" && (searchParams.sort === "oldest" || searchParams.sort === "newest")
+    ? (searchParams.sort as "oldest" | "newest")
+    : "newest";
+  const qp_page = (() => {
+    const p = Number(searchParams.page);
+    return Number.isFinite(p) && p > 0 ? p : 1;
+  })();
+  const qp_pageSize = (() => {
+    const s = Number(searchParams.pageSize);
+    return Number.isFinite(s) && s > 0 ? Math.min(100, s) : 20;
+  })();
+  const qp_tags = parseArrayParam(searchParams.tags);
+  const qp_types = parseArrayParam(searchParams.types);
+  const qp_dateFrom = typeof searchParams.dateFrom === "string" ? searchParams.dateFrom : undefined;
+  const qp_dateTo = typeof searchParams.dateTo === "string" ? searchParams.dateTo : undefined;
+  const qp_showSummary = searchParams.summary === "1" || searchParams.summary === "true";
 
-  const fetchUploads = async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({
-        page: page.toString(),
-        pageSize: pageSize.toString(),
-      });
-      const res = await fetch(`/api/uploads-for-user?${params}`);
-      const json = await res.json();
-
-      if (Array.isArray(json.uploads)) {
-        setUploads(json.uploads);
-        setTotal(json.total || 0);
-      } else {
-        console.error('Unexpected response format:', json);
-      }
-    } catch (error) {
-      console.error('Error fetching uploads:', error);
-    } finally {
-      setLoading(false);
-    }
+  const opts: UploadListOpts = {
+    search: qp_search,
+    sort: qp_sort,
+    page: qp_page,
+    pageSize: qp_pageSize,
+    tags: qp_tags,
+    fileTypes: qp_types,
+    dateFrom: qp_dateFrom,
+    dateTo: qp_dateTo,
   };
 
-  useEffect(() => {
-    if (session) fetchUploads();
-  }, [session, page]);
-
-  const getFilteredUploads = () => {
-    return uploads
-      .filter((upload) => {
-        if (fileTypeFilter === 'all') return true;
-        const ext = upload.name?.split('.').pop()?.toLowerCase();
-        if (!ext) return false;
-        const filters: Record<string, string[]> = {
-          pdf: ['pdf'],
-          doc: ['doc', 'docx'],
-          image: ['jpg', 'jpeg', 'png', 'gif'],
-          excel: ['xls', 'xlsx', 'csv'],
-          txt: ['txt'],
-        };
-        return filters[fileTypeFilter]?.includes(ext);
-      })
-      .filter((upload) =>
-        upload.name?.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-      .sort((a, b) =>
-        sortOrder === 'newest'
-          ? new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          : new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      );
-  };
-
-  const filteredUploads = useMemo(getFilteredUploads, [
-    uploads,
-    fileTypeFilter,
-    searchQuery,
-    sortOrder,
+  const [{ uploads, total, page, pageSize }, facets] = await Promise.all([
+    getUploadsForUser(userId!, opts),
+    getUploadFacetsForUser(userId!),
   ]);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-  const handleEdit = (id: number, currentSummary: string | null) => {
-    setEditingId(id);
-    setEditedSummary(currentSummary ?? '');
+  const formatDateTime = (d: Date | string) => new Date(d).toLocaleString();
+  const isRecentlyReplaced = (d?: Date | string | null) =>
+    !!d && Date.now() - new Date(d).getTime() < 1000 * 60 * 60 * 48; // 48h
+
+  const qs = (params: Record<string, string | undefined>) => {
+    const url = new URLSearchParams();
+    if (qp_search) url.set("search", qp_search);
+    if (qp_sort) url.set("sort", qp_sort);
+    if (qp_dateFrom) url.set("dateFrom", qp_dateFrom);
+    if (qp_dateTo) url.set("dateTo", qp_dateTo);
+    if (qp_tags?.length) url.set("tags", qp_tags.join(","));
+    if (qp_types?.length) url.set("types", qp_types.join(","));
+    if (qp_showSummary) url.set("summary", "1");
+    for (const [k, v] of Object.entries(params)) if (v) url.set(k, v);
+    return `?${url.toString()}`;
   };
-
-  const handleCancel = () => {
-    setEditingId(null);
-    setEditedSummary('');
-  };
-
-  const handleSave = async (id: number) => {
-    const savingToast = toast.loading('Saving summary...');
-    try {
-      const res = await fetch(`/api/uploads/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ summary: editedSummary }),
-      });
-
-      if (res.ok) {
-        const updated = await res.json();
-        setUploads((prev) =>
-          prev.map((u) => (u.id === id ? { ...u, summary: updated.summary } : u))
-        );
-        toast.success('Summary updated!', { id: savingToast });
-        handleCancel();
-      } else {
-        toast.error('Failed to update summary.', { id: savingToast });
-      }
-    } catch (error) {
-      console.error('Error saving summary:', error);
-      toast.error('Unexpected error while saving.', { id: savingToast });
-    }
-  };
-
-  const handleDelete = async (id: number) => {
-    const confirm = window.confirm('Are you sure you want to delete this file?');
-    if (!confirm) return;
-
-    const deletingToast = toast.loading('Deleting...');
-    try {
-      const res = await fetch(`/api/uploads/${id}`, { method: 'DELETE' });
-
-      if (res.ok) {
-        setUploads((prev) => prev.filter((u) => u.id !== id));
-        toast.success('File deleted.', { id: deletingToast });
-      } else {
-        toast.error('Failed to delete file.', { id: deletingToast });
-      }
-    } catch (error) {
-      console.error('Error deleting file:', error);
-      toast.error('Unexpected error while deleting.', { id: deletingToast });
-    }
-  };
-
-  const handleReplace = async (id: number, file: File) => {
-    const replacingToast = toast.loading('Replacing file...');
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const res = await fetch(`/api/replace-file/${id}`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (res.ok) {
-        const updated = await res.json();
-        setUploads((prev) =>
-          prev.map((u) =>
-            u.id === id
-              ? { ...u, name: file.name, url: updated.url, replacedAt: new Date().toISOString() }
-              : u
-          )
-        );
-        toast.success('File replaced!', { id: replacingToast });
-      } else {
-        toast.error('Failed to replace file.', { id: replacingToast });
-      }
-    } catch (error) {
-      console.error('Error replacing file:', error);
-      toast.error('Unexpected error while replacing.', { id: replacingToast });
-    }
-  };
-
-  if (!session) {
-    return <div className="p-4 text-center">Please sign in to view your dashboard.</div>;
-  }
 
   return (
-    <div className="max-w-4xl mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4">Dashboard</h1>
+    <div className="mx-auto max-w-6xl px-4 py-8">
+      <h1 className="text-2xl font-semibold">Your uploads</h1>
+      <p className="mt-1 text-sm text-neutral-600">
+        {total} file{total === 1 ? "" : "s"} • page {page} of {totalPages}
+      </p>
 
       {/* Filters */}
-      <div className="mb-4 flex flex-wrap gap-4 items-center">
-        <input
-          type="text"
-          placeholder="Search by filename"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="border px-2 py-1 rounded text-sm w-48"
-        />
+      <form method="GET" className="mt-6 grid grid-cols-1 gap-4 rounded-2xl border p-4 md:grid-cols-12">
+        <div className="md:col-span-4">
+          <label className="block text-xs font-medium text-neutral-600">Search</label>
+          <input type="text" name="search" defaultValue={qp_search} placeholder="Filename…" className="mt-1 w-full rounded-lg border px-3 py-2 text-sm" />
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-xs font-medium text-neutral-600">From</label>
+          <input type="date" name="dateFrom" defaultValue={qp_dateFrom} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm" />
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-xs font-medium text-neutral-600">To</label>
+          <input type="date" name="dateTo" defaultValue={qp_dateTo} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm" />
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-xs font-medium text-neutral-600">Sort</label>
+          <select name="sort" defaultValue={qp_sort} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm">
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+          </select>
+        </div>
+        <div className="md:col-span-2">
+          <label className="block text-xs font-medium text-neutral-600">Page size</label>
+          <select name="pageSize" defaultValue={String(qp_pageSize)} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm">
+            {[10,20,30,50,100].map((n)=> (<option key={n} value={n}>{n}</option>))}
+          </select>
+        </div>
 
-        <select
-          value={fileTypeFilter}
-          onChange={(e) => setFileTypeFilter(e.target.value)}
-          className="border px-2 py-1 rounded text-sm"
-        >
-          <option value="all">All Types</option>
-          <option value="pdf">PDF</option>
-          <option value="doc">DOC/DOCX</option>
-          <option value="image">Image</option>
-          <option value="excel">Excel/CSV</option>
-          <option value="txt">Text</option>
-        </select>
+        <div className="md:col-span-6">
+          <label className="block text-xs font-medium text-neutral-600">Tags</label>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {facets.tags.length === 0 ? (
+              <span className="text-xs text-neutral-500">No tags yet</span>
+            ) : (
+              facets.tags.map((t) => (
+                <label key={t} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs">
+                  <input type="checkbox" name="tags" value={t} defaultChecked={isChecked(t, qp_tags)} className="accent-black" />
+                  <span>{t}</span>
+                </label>
+              ))
+            )}
+          </div>
+        </div>
 
-        <select
-          value={sortOrder}
-          onChange={(e) => setSortOrder(e.target.value as 'newest' | 'oldest')}
-          className="border px-2 py-1 rounded text-sm"
-        >
-          <option value="newest">Newest First</option>
-          <option value="oldest">Oldest First</option>
-        </select>
-      </div>
+        <div className="md:col-span-6">
+          <label className="block text-xs font-medium text-neutral-600">File types</label>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {facets.mimeTypes.length === 0 ? (
+              <span className="text-xs text-neutral-500">No file types yet</span>
+            ) : (
+              facets.mimeTypes.map((mt) => (
+                <label key={mt} className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs">
+                  <input type="checkbox" name="types" value={mt} defaultChecked={isChecked(mt, qp_types)} className="accent-black" />
+                  <span>{mt}</span>
+                </label>
+              ))
+            )}
+          </div>
+        </div>
 
-      {loading ? (
-        <p>Loading your uploaded files...</p>
-      ) : filteredUploads.length === 0 ? (
-        <p>No uploads found.</p>
-      ) : (
-        <ul className="space-y-4">
-          {filteredUploads.map((upload) => (
-            <li
-              key={upload.id}
-              className="border border-gray-200 rounded-lg p-4 shadow-sm bg-white flex items-start"
-            >
-              <span className="text-2xl mr-4">{getFileTypeIcon(upload.name)}</span>
-              <div className="flex-1">
-                <p className="font-medium">{upload.name}</p>
-                <p className="text-sm text-gray-500">
-                  Uploaded: {new Date(upload.createdAt).toLocaleString()}
-                </p>
-                {upload.replacedAt && (
-                  <span className="inline-block mt-1 bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded">
-                    Replaced: {new Date(upload.replacedAt).toLocaleString()}
-                  </span>
-                )}
+        <div className="md:col-span-12">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input type="checkbox" name="summary" value="1" defaultChecked={qp_showSummary} className="accent-black" />
+            Show summaries
+          </label>
+        </div>
 
-                {upload.tags?.length > 0 && (
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    {upload.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded"
-                      >
-                        {tag}
+        <div className="md:col-span-12 flex items-center gap-2">
+          <button type="submit" className="rounded-xl px-3 py-2 text-sm font-medium ring-1 ring-inset ring-neutral-300 hover:bg-neutral-50">Apply filters</button>
+          <Link href="/dashboard" className="rounded-xl px-3 py-2 text-sm font-medium ring-1 ring-inset ring-neutral-300 hover:bg-neutral-50">Reset</Link>
+        </div>
+      </form>
+
+      {/* Grid */}
+      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+        {uploads.map((u) => (
+          <div key={u.id} className="rounded-xl border p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium flex items-center gap-2">
+                  <span>{u.name ?? "Untitled"}</span>
+                  {isRecentlyReplaced(u.replacedAt) && (
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
+                      Recently replaced
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-neutral-500">
+                  {formatDateTime(u.createdAt as any)} • {u.mimeType || "unknown"}
+                </div>
+                {u.tags?.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {u.tags.map((t: string) => (
+                      <span key={t} className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-700 ring-1 ring-inset ring-neutral-200">
+                        {t}
                       </span>
                     ))}
                   </div>
-                )}
-
-                {editingId === upload.id ? (
-                  <div className="mt-2 space-y-2">
-                    <textarea
-                      className="w-full border rounded p-2 text-sm"
-                      rows={4}
-                      value={editedSummary}
-                      onChange={(e) => setEditedSummary(e.target.value)}
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        className="px-3 py-1 bg-blue-600 text-white rounded text-sm"
-                        onClick={() => handleSave(upload.id)}
-                      >
-                        Save
-                      </button>
-                      <button
-                        className="px-3 py-1 bg-gray-300 rounded text-sm"
-                        onClick={handleCancel}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : upload.summary ? (
-                  <div className="mt-2 text-gray-700">
-                    <p>
-                      <strong>Summary:</strong> {upload.summary}
-                    </p>
-                    <button
-                      className="mt-1 text-blue-600 text-sm underline"
-                      onClick={() => handleEdit(upload.id, upload.summary)}
-                    >
-                      Edit Summary
-                    </button>
-                  </div>
                 ) : null}
-
-                {/* Replace file */}
-                <div className="mt-2 flex gap-2 items-center">
-                  <input
-                    type="file"
-                    onChange={(e) =>
-                      e.target.files && handleReplace(upload.id, e.target.files[0])
-                    }
-                    className="text-sm"
-                  />
-                  <button
-                    className="text-red-600 text-sm underline"
-                    onClick={() => handleDelete(upload.id)}
-                  >
-                    Delete
-                  </button>
-                </div>
+                {qp_showSummary && u.summary && (
+                  <p className="mt-2 line-clamp-5 text-sm text-neutral-700">{u.summary}</p>
+                )}
               </div>
-            </li>
-          ))}
-        </ul>
-      )}
+              <div className="flex shrink-0 items-center gap-2">
+                {u.url && (
+                  <a href={u.url} className="rounded-lg px-2 py-1 text-xs font-medium ring-1 ring-inset ring-neutral-300 hover:bg-neutral-50">
+                    Download
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
 
-      {/* Pagination Controls */}
-      <div className="mt-6 flex justify-between items-center text-sm">
-        <button
-          className="px-3 py-1 bg-gray-200 rounded disabled:opacity-50"
-          onClick={() => setPage((p) => Math.max(p - 1, 1))}
-          disabled={page === 1}
-        >
-          Previous
-        </button>
-        <span>
-          Page {page} of {Math.ceil(total / pageSize)}
-        </span>
-        <button
-          className="px-3 py-1 bg-gray-200 rounded disabled:opacity-50"
-          onClick={() => setPage((p) => p + 1)}
-          disabled={page * pageSize >= total}
-        >
-          Next
-        </button>
+      {/* Pager */}
+      <div className="mt-6 flex items-center justify-between">
+        <Link href={qs({ page: String(Math.max(1, page - 1)), pageSize: String(pageSize) })} className="rounded-lg px-3 py-1.5 text-sm ring-1 ring-inset ring-neutral-300 hover:bg-neutral-50 aria-disabled:opacity-40" aria-disabled={page <= 1}>Previous</Link>
+        <div className="text-xs text-neutral-500">Page {page} of {totalPages}</div>
+        <Link href={qs({ page: String(Math.min(totalPages, page + 1)), pageSize: String(pageSize) })} className="rounded-lg px-3 py-1.5 text-sm ring-1 ring-inset ring-neutral-300 hover:bg-neutral-50 aria-disabled:opacity-40" aria-disabled={page >= totalPages}>Next</Link>
       </div>
     </div>
   );
